@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Sprotile",
-    "version": (5, 2),
+    "version": (5, 3),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > Sprotile | View3D > Toolbar (Edit Mode)",
     "description": "Paint texture atlas tiles onto faces with a continuous visual picker",
@@ -40,6 +40,8 @@ addon_keymaps = []
 _tool_registered = False
 
 PANEL_TOP_MARGIN = 35
+PANEL_MIN_WIDTH = 100
+PANEL_RESIZE_HANDLE = 8
 DOUBLE_CLICK_SECONDS = 0.3
 ROTATION_ORDER = ('0', '90', '180', '270')
 RECENT_TILE_LIMIT = 32
@@ -329,16 +331,64 @@ def tile_dimensions(size, mode):
     return s, s
 
 
+def viewport_visible_width(region, area):
+    """Window-region width excluding an overlapping right sidebar."""
+    right = region.width
+    if area is not None:
+        for other in area.regions:
+            if other.type == 'UI' and other.width > 1 and other.x > region.x:
+                right = min(right, other.x - region.x)
+    return right
+
+
+def preview_available_width(region):
+    area = getattr(_preview_operator, 'area', None)
+    return viewport_visible_width(region, area if get_window_region(area) == region else None)
+
+
 def preview_panel_rect(scene, region):
     """Clamped picker rectangle in region pixels: (left, width, top).
 
     One definition, used by the overlay, the hit test and the brush dead zone -
     if these ever drift apart the panel and the area it blocks stop matching.
     """
-    left = max(0, min(int(scene.sprotile_preview_left), max(0, region.width - 60)))
-    width = max(60, min(int(scene.sprotile_preview_width), max(60, region.width - left)))
+    left, width = scene.sprotile_preview_left, scene.sprotile_preview_width
+    drag = getattr(_preview_operator, 'panel_drag', None)
+    if drag is not None and drag.scene == scene and drag.region == region:
+        left, width = drag.left, drag.width
+    available = preview_available_width(region)
+    minimum = min(PANEL_MIN_WIDTH, available)
+    left = max(0, min(int(left), max(0, available - minimum)))
+    width = max(minimum, min(int(width), available - left))
     top = max(1, region.height - PANEL_TOP_MARGIN)
     return left, width, top
+
+
+class PreviewPanelDrag:
+    """Transient horizontal layout; commit Scene properties only on release."""
+
+    def __init__(self, scene, region, mouse_x, mode):
+        self.scene = scene
+        self.region = region
+        self.mode = mode
+        self.start_x = mouse_x  # Window space, stable when crossing UI regions.
+        self.start_left, self.start_width, _ = preview_panel_rect(scene, region)
+        self.left, self.width = self.start_left, self.start_width
+
+    def update(self, mouse_x):
+        delta = mouse_x - self.start_x
+        available = preview_available_width(self.region)
+        minimum = min(PANEL_MIN_WIDTH, available)
+        if self.mode == 'RESIZE':
+            self.left = min(self.start_left, max(0, available - minimum))
+            self.width = max(minimum, min(self.start_width + delta, available - self.left))
+        else:
+            self.width = min(self.start_width, available)
+            self.left = max(0, min(self.start_left + delta, available - self.width))
+
+    def commit(self):
+        self.scene.sprotile_preview_left = round(self.left)
+        self.scene.sprotile_preview_width = round(self.width)
 
 
 def image_size(image):
@@ -538,10 +588,7 @@ class RecentTiles:
         if not scene.sprotile_show_recent_tiles or image_size(image)[0] <= 0:
             return None
         # The N-panel can overlap the WINDOW region. Anchor to its visible edge.
-        right = region.width
-        for other in area.regions:
-            if other.type == 'UI' and other.width > 1 and other.x > region.x:
-                right = min(right, other.x - region.x)
+        right = viewport_visible_width(region, area)
         margin, padding, gap, header = 12, 8, 4, 24
         cell = min(40, (right - 2 * margin - 2 * padding - 7 * gap) / RECENT_TILE_COLUMNS,
                    (region.height - 2 * margin - 2 * padding - header - 3 * gap) / 4)
@@ -858,6 +905,7 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         self.area = context.area
         self.stop_requested = False
         self.is_panning = False
+        self.panel_drag = None
         self.pan_start_x = 0
         self.pan_start_y = 0
         self.hover_col = -1
@@ -899,6 +947,7 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
             self.draw_handle = None
         if _preview_operator is self:
             _preview_operator = None
+        self.panel_drag = None
         self.image = None
         tag_redraw_view3d()
 
@@ -1070,7 +1119,7 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
 
         # Only act on events that belong to our own viewport.
         if context.area is None or context.area != self.area:
-            if not self.is_panning:
+            if not self.is_panning and getattr(self, 'panel_drag', None) is None:
                 self.hover_col = -1
                 self.hover_row = -1
                 return {'PASS_THROUGH'}
@@ -1084,6 +1133,21 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         mouse_y = event.mouse_y - region.y
         self.mouse_pos = (mouse_x, mouse_y)
 
+        # A layout drag owns events until release, even over the sidebar or
+        # another viewport. No tile picking, mapping or image panning can fire.
+        drag = getattr(self, 'panel_drag', None)
+        if drag is not None:
+            if event.type == 'MOUSEMOVE':
+                drag.update(event.mouse_x)
+            elif event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+                drag.update(event.mouse_x)
+                drag.commit()
+                self.panel_drag = None
+            elif (event.type in {'ESC', 'WINDOW_DEACTIVATE'} or
+                  (event.type == 'RIGHTMOUSE' and event.value == 'PRESS')):
+                self.panel_drag = None
+            return {'RUNNING_MODAL'}
+
         self.image = resolve_atlas_image(context.active_object)
         if self.image is None:
             self.atlas_width = 0
@@ -1092,11 +1156,8 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
             self.hover_row = -1
             if self.is_panning and event.type in {'MIDDLEMOUSE', 'RIGHTMOUSE'} and event.value == 'RELEASE':
                 self.is_panning = False
-            return {'PASS_THROUGH'}
-
-        self.atlas_width, self.atlas_height = image_size(self.image)
-        if self.atlas_width <= 0 or self.atlas_height <= 0:
-            return {'PASS_THROUGH'}
+        else:
+            self.atlas_width, self.atlas_height = image_size(self.image)
 
         # Drag panning owns the mouse until the button comes back up.
         if self.is_panning:
@@ -1136,6 +1197,8 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         if event.type == 'MOUSEMOVE':
             if not in_recent:
                 self.update_hover(context, mouse_x, mouse_y)
+                if mouse_x >= left + width - PANEL_RESIZE_HANDLE:
+                    self.hover_col = self.hover_row = -1
             return {'RUNNING_MODAL'}
 
         if in_recent and event.type in {'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE',
@@ -1165,7 +1228,17 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
 
         if event.type == 'LEFTMOUSE':
             if event.value == 'PRESS':
-                self.on_click(context, event, mouse_x, mouse_y)
+                self.update_hover(context, mouse_x, mouse_y)
+                resizing = mouse_x >= left + width - PANEL_RESIZE_HANDLE
+                if resizing or self.hover_col < 0 or self.hover_row < 0:
+                    self.panel_drag = PreviewPanelDrag(
+                        scene, region, event.mouse_x, 'RESIZE' if resizing else 'MOVE',
+                    )
+                    self.hover_col = self.hover_row = -1
+                    self.last_click_tile = (-1, -1)
+                    self.last_click_time = 0.0
+                else:
+                    self.on_click(context, event, mouse_x, mouse_y)
             # Swallow the release too, otherwise the viewport (or the Sprotile
             # brush tool) reacts to a click that was meant for the picker.
             return {'RUNNING_MODAL'}
@@ -1242,6 +1315,19 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
 
     # -- drawing ------------------------------------------------------------
 
+    def draw_panel_handle(self, shader, left, width, top):
+        edge = left + width
+        drag = getattr(self, 'panel_drag', None)
+        hovered = edge - PANEL_RESIZE_HANDLE <= self.mouse_pos[0] <= edge and 0 <= self.mouse_pos[1] <= top
+        active = hovered or (drag is not None and drag.mode == 'RESIZE')
+        shader.bind()
+        shader.uniform_float("color", (0.12, 0.12, 0.12, 1.0))
+        draw_rect_fill(shader, edge - PANEL_RESIZE_HANDLE, 0, edge, top)
+        shader.uniform_float("color", (0.15, 0.75, 1.0, 1.0) if active else (0.5, 0.5, 0.5, 1.0))
+        for offset in (3, 6):
+            draw_line(shader, edge - offset, max(0, top / 2 - 18),
+                      edge - offset, min(top, top / 2 + 18))
+
     def draw_orientation_marker(self, shader, x, y, w, h, rotation, flip_u, flip_v):
         """Little arrow showing which way up the tile will be painted."""
         if w < 16 or h < 16:
@@ -1288,6 +1374,17 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
             shader.uniform_float("color", (0.2, 0.2, 0.2, 1.0))
             draw_line(shader, left, 0, left, top)
             draw_line(shader, left + width, 0, left + width, top)
+            self.draw_panel_handle(shader, left, width, top)
+
+            # Reserve the grip and clip the atlas and labels to the panel as
+            # it shrinks. Recent tiles are drawn after this scissor is removed.
+            sc_x = max(0, min(int(left), region.width))
+            sc_w = max(0, min(int(width) - PANEL_RESIZE_HANDLE, region.width - sc_x))
+            sc_h = max(0, min(int(top), region.height))
+            if sc_w > 0 and sc_h > 0:
+                gpu.state.scissor_test_set(True)
+                gpu.state.scissor_set(sc_x, 0, sc_w, sc_h)
+                scissor_on = True
 
             self.image = resolve_atlas_image(context.active_object)
             if self.image is not None:
@@ -1310,18 +1407,6 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
             if rect is None:
                 return
             start_x, start_y, display_width, display_height = rect
-
-            # Clip to the panel.  A scissor box must stay inside the region or
-            # the driver rejects it and everything drawn afterwards in the
-            # viewport vanishes.
-            sc_x = max(0, min(int(left), region.width))
-            sc_y = 0
-            sc_w = max(0, min(int(width), region.width - sc_x))
-            sc_h = max(0, min(int(top), region.height))
-            if sc_w > 0 and sc_h > 0:
-                gpu.state.scissor_test_set(True)
-                gpu.state.scissor_set(sc_x, sc_y, sc_w, sc_h)
-                scissor_on = True
 
             # 2. Atlas texture
             try:
@@ -1382,10 +1467,6 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
                     shader.uniform_float("color", (1.0, 0.9, 0.0, 0.3))
                     draw_rect_fill(shader, tx, ty, tx + tile_w_disp, ty + tile_h_disp)
 
-            if scissor_on:
-                gpu.state.scissor_test_set(False)
-                scissor_on = False
-
             # 6. Header text
             font_id = 0
             blf_size(font_id, 11)
@@ -1428,6 +1509,12 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
             blf.draw(font_id, "R / Shift+R: Rotate | X / Y: Flip")
             blf.position(font_id, left + 10, y - 40, 0)
             blf.draw(font_id, "Ctrl+LMB / Double-Click: Map | Esc: Close")
+            blf.position(font_id, left + 10, y - 60, 0)
+            blf.draw(font_id, "LMB Drag empty space: Move | Right edge: Resize")
+
+            if scissor_on:
+                gpu.state.scissor_test_set(False)
+                scissor_on = False
 
             # Draw after removing the atlas scissor so this independent panel
             # remains visible at the bottom-right of the viewport.
@@ -2067,12 +2154,6 @@ class VIEW3D_PT_atlas_mapper_panel(bpy.types.Panel):
         box.label(text="Applies when painting or mapping", icon='INFO')
 
         layout.separator()
-        box = layout.box()
-        box.label(text="Atlas UI Layout:", icon='PREFERENCES')
-        box.prop(scene, "sprotile_preview_width")
-        box.prop(scene, "sprotile_preview_left")
-
-        layout.separator()
         box2 = layout.box()
         box2.label(text=f"Active Tile: ({scene.sprotile_active_col}, {scene.sprotile_active_row})", icon='PINNED')
         box2.operator("mesh.sprotile_pipette", text="Pipette from Selected Face", icon='EYEDROPPER')
@@ -2252,15 +2333,15 @@ def _register_properties():
         name="Preview Width",
         description="Width of the texture preview column in pixels",
         default=300,
-        min=100,
-        max=1200,
+        min=PANEL_MIN_WIDTH,
+        soft_max=1200,
     )
     bpy.types.Scene.sprotile_preview_left = IntProperty(
         name="Preview Left Offset",
         description="Horizontal spacing from the left screen edge in pixels",
         default=50,
         min=0,
-        max=400,
+        soft_max=400,
     )
     bpy.types.Scene.sprotile_active_col = IntProperty(
         name="Active Column",

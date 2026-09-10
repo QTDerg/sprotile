@@ -18,9 +18,11 @@ Usage:
 
 Controls:
 - Left Mouse Button - Select texture tile
-- Wheel - Scroll
-- Middle or Right Mouse Button - Pan
-- ESC - Cancel
+- Wheel - Zoom
+- Middle or Right Mouse Button Drag - Pan
+- Left-drag the picker's right edge - Resize the picker
+- Left-drag empty space inside the picker (outside atlas tiles) - Move the picker horizontally
+- Release to keep the new layout; Esc or right-click during a layout drag cancels it
 
 Recently-used tiles:
 - Enable Recently-used Tiles in the Sprotile sidebar and open the atlas preview.
