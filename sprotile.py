@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Sprotile",
-    "version": (5, 0),
+    "version": (5, 1),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > Sprotile | View3D > Toolbar (Edit Mode)",
     "description": "Paint texture atlas tiles onto faces with a continuous visual picker",
@@ -71,23 +71,57 @@ def blf_size(font_id, size):
         blf.size(font_id, size)
 
 
-_image_shader_name = None
+_image_shader = None
 
 
 def get_image_shader():
-    """Resolve a usable builtin image shader once and cache the name."""
-    global _image_shader_name
-    if _image_shader_name is None:
-        for name in ('IMAGE_SCENE_LINEAR_TO_REC709_SRGB', 'IMAGE'):
-            try:
-                gpu.shader.from_builtin(name)
-            except Exception:
-                continue
-            _image_shader_name = name
-            break
-        if _image_shader_name is None:
-            _image_shader_name = 'IMAGE'
-    return gpu.shader.from_builtin(_image_shader_name)
+    """Cached nearest-pixel shader for the atlas preview (Blender 3.6+)."""
+    global _image_shader
+    if _image_shader is None:
+        interface = gpu.types.GPUStageInterfaceInfo("sprotile_image_interface")
+        interface.smooth('VEC2', "uv")
+        info = gpu.types.GPUShaderCreateInfo()
+        info.push_constant('MAT4', "ModelViewProjectionMatrix")
+        # Blender updates this built-in uniform for the current framebuffer.
+        # An sRGB framebuffer encodes linear output itself; converting in the
+        # shader as well would apply gamma twice and wash out the preview.
+        info.push_constant('BOOL', "srgbTarget")
+        info.vertex_in(0, 'VEC2', "pos")
+        info.vertex_in(1, 'VEC2', "texCoord")
+        info.vertex_out(interface)
+        info.sampler(0, 'FLOAT_2D', "image")
+        info.fragment_out(0, 'VEC4', "fragColor")
+        info.vertex_source('''
+            void main()
+            {
+                uv = texCoord;
+                gl_Position = ModelViewProjectionMatrix * vec4(pos, 0.0, 1.0);
+            }
+        ''')
+        # texelFetch reads one pixel at mip level 0, bypassing interpolation
+        # without changing the sampler of the image shared with Blender.
+        # GPUTexture filtering controls are unavailable in older versions.
+        info.fragment_source('''
+            float to_srgb(float value)
+            {
+                return value < 0.0031308
+                    ? 12.92 * max(value, 0.0)
+                    : 1.055 * pow(value, 1.0 / 2.4) - 0.055;
+            }
+
+            void main()
+            {
+                ivec2 size = textureSize(image, 0);
+                ivec2 pixel = clamp(ivec2(floor(uv * vec2(size))),
+                                    ivec2(0), size - ivec2(1));
+                vec4 color = texelFetch(image, pixel, 0);
+                fragColor = srgbTarget ? color
+                    : vec4(to_srgb(color.r), to_srgb(color.g),
+                           to_srgb(color.b), color.a);
+            }
+        ''')
+        _image_shader = gpu.shader.create_from_info(info)
+    return _image_shader
 
 
 def invert_matrix(matrix):
@@ -133,6 +167,10 @@ def draw_line(shader, x0, y0, x1, y1):
 
 
 def draw_image_quad(tex_shader, x0, y0, x1, y1):
+    tex_shader.uniform_float(
+        "ModelViewProjectionMatrix",
+        gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix(),
+    )
     batch = batch_for_shader(
         tex_shader, 'TRIS',
         {
@@ -1880,7 +1918,7 @@ def force_cleanup():
     (loading a file, reloading scripts, closing the window).  Without this the
     overlay keeps drawing forever and the picker can never be reopened.
     """
-    global _preview_operator, _preview_draw_handle
+    global _preview_operator, _preview_draw_handle, _image_shader
 
     if _preview_operator is not None:
         try:
@@ -1912,6 +1950,7 @@ def force_cleanup():
             pass
     _brush_draw_handles.clear()
 
+    _image_shader = None
     tag_redraw_view3d()
 
 

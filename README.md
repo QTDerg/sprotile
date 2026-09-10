@@ -21,3 +21,5 @@ Controls:
 - Wheel - Scroll
 - Middle or Right Mouse Button - Pan
 - ESC - Cancel
+
+Special thanks to Crystal Fissure for fixing some bugs
