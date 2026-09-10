@@ -22,4 +22,10 @@ Controls:
 - Middle or Right Mouse Button - Pan
 - ESC - Cancel
 
+Recently-used tiles:
+- Enable Recently-used Tiles in the Sprotile sidebar and open the atlas preview.
+- The bottom-right panel shows up to 32 unique tiles for the current atlas, newest first, in up to four rows of eight.
+- Click a thumbnail to re-select its tile and restore its tile size/mode. Ctrl+click also maps selected faces. Rotation, flips, and UV inset use your current settings.
+- Picking, mapping, painting, and pipetting tiles update the history. History is kept per scene/atlas for the current session; hiding or closing the preview keeps it, loading a file or disabling the add-on clears it.
+
 Special thanks to Crystal Fissure for fixing some bugs

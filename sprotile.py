@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Sprotile",
-    "version": (5, 1),
+    "version": (5, 2),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > Sprotile | View3D > Toolbar (Edit Mode)",
     "description": "Paint texture atlas tiles onto faces with a continuous visual picker",
@@ -15,7 +15,7 @@ import math
 import time
 import traceback
 import mathutils
-from collections import deque, defaultdict
+from collections import deque, defaultdict, namedtuple
 from mathutils.bvhtree import BVHTree
 from gpu_extras.batch import batch_for_shader
 from bpy.app.handlers import persistent
@@ -42,6 +42,8 @@ _tool_registered = False
 PANEL_TOP_MARGIN = 35
 DOUBLE_CLICK_SECONDS = 0.3
 ROTATION_ORDER = ('0', '90', '180', '270')
+RECENT_TILE_LIMIT = 32
+RECENT_TILE_COLUMNS = 8
 
 # Runaway guard for the brush flood fill.  The real bound is "faces touching
 # the brush circle"; this only exists so a pathological mesh cannot lock the UI.
@@ -166,16 +168,17 @@ def draw_line(shader, x0, y0, x1, y1):
     batch.draw(shader)
 
 
-def draw_image_quad(tex_shader, x0, y0, x1, y1):
+def draw_image_quad(tex_shader, x0, y0, x1, y1, uv_rect=(0.0, 0.0, 1.0, 1.0)):
     tex_shader.uniform_float(
         "ModelViewProjectionMatrix",
         gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix(),
     )
+    u0, v0, u1, v1 = uv_rect
     batch = batch_for_shader(
         tex_shader, 'TRIS',
         {
             "pos": ((x0, y0), (x1, y0), (x1, y1), (x0, y1)),
-            "texCoord": ((0, 0), (1, 0), (1, 1), (0, 1)),
+            "texCoord": ((u0, v0), (u1, v0), (u1, v1), (u0, v1)),
         },
         indices=((0, 1, 2), (0, 2, 3)),
     )
@@ -314,8 +317,11 @@ def get_tile_dims(scene):
     A 1px tile in one of the half modes used to collapse to 0px and raise
     ZeroDivisionError deep inside drawing.
     """
-    s = max(1, scene.sprotile_tile_size)
-    mode = scene.sprotile_tile_mode
+    return tile_dimensions(scene.sprotile_tile_size, scene.sprotile_tile_mode)
+
+
+def tile_dimensions(size, mode):
+    s = max(1, size)
     if mode == 'HALF_WIDE':
         return s, max(1, s // 2)
     if mode == 'HALF_TALL':
@@ -462,6 +468,144 @@ def tile_uv_bounds(col, row, tile_w_px, tile_h_px,
     )
 
 
+# ---------------------------------------------------------------------------
+# Recent tiles: session history and one shared layout for drawing/hit testing
+# ---------------------------------------------------------------------------
+
+RecentTile = namedtuple("RecentTile", "col row size mode")
+
+
+class RecentTilesLayout:
+    def __init__(self, bounds, cells):
+        self.bounds = bounds
+        self.cells = cells  # (RecentTile, (left, bottom, right, top)) pairs
+
+    @staticmethod
+    def inside(rect, x, y):
+        return rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
+
+    def contains(self, x, y):
+        return self.inside(self.bounds, x, y)
+
+    def tile_at(self, x, y):
+        return next((tile for tile, rect in self.cells if self.inside(rect, x, y)), None)
+
+
+class RecentTiles:
+    """At most 32 unique tiles per scene/atlas, newest first; no mesh state."""
+
+    def __init__(self):
+        self._history = {}
+
+    def clear(self):
+        self._history.clear()
+
+    def tiles(self, scene, image):
+        width, height = image_size(image)
+        if width <= 0 or height <= 0:
+            return ()
+        # Session IDs survive renaming and undo and cannot alias a deleted ID.
+        key = (scene.session_uid, image.session_uid)
+        tiles = self._history.get(key, ())
+        # An image may have been resized/reloaded since these tiles were used.
+        return tuple(tile for tile in tiles
+                     if (tile.col + 1) * tile_dimensions(tile.size, tile.mode)[0] <= width
+                     and (tile.row + 1) * tile_dimensions(tile.size, tile.mode)[1] <= height)
+
+    def remember(self, scene, image, col, row):
+        width, height = image_size(image)
+        tile_w, tile_h = get_tile_dims(scene)
+        if width < tile_w or height < tile_h:
+            return
+        # Mirror the mapping clamp, including after changing Tile Size.
+        col = max(0, min(width // tile_w - 1, col))
+        row = max(0, min(height // tile_h - 1, row))
+        tile = RecentTile(col, row, scene.sprotile_tile_size, scene.sprotile_tile_mode)
+        key = (scene.session_uid, image.session_uid)
+        previous = self.tiles(scene, image)
+        self._history[key] = [tile] + [item for item in previous if item != tile][:RECENT_TILE_LIMIT - 1]
+
+    def select(self, scene, image, tile):
+        if tile not in self.tiles(scene, image):
+            return
+        scene.sprotile_tile_size = tile.size
+        scene.sprotile_tile_mode = tile.mode
+        scene.sprotile_active_col = tile.col
+        scene.sprotile_active_row = tile.row
+        self.remember(scene, image, tile.col, tile.row)
+
+    def layout(self, scene, region, area, image):
+        if not scene.sprotile_show_recent_tiles or image_size(image)[0] <= 0:
+            return None
+        # The N-panel can overlap the WINDOW region. Anchor to its visible edge.
+        right = region.width
+        for other in area.regions:
+            if other.type == 'UI' and other.width > 1 and other.x > region.x:
+                right = min(right, other.x - region.x)
+        margin, padding, gap, header = 12, 8, 4, 24
+        cell = min(40, (right - 2 * margin - 2 * padding - 7 * gap) / RECENT_TILE_COLUMNS,
+                   (region.height - 2 * margin - 2 * padding - header - 3 * gap) / 4)
+        if cell < 12:
+            return None
+        tiles = self.tiles(scene, image)
+        rows = max(1, (len(tiles) + RECENT_TILE_COLUMNS - 1) // RECENT_TILE_COLUMNS)
+        width = 2 * padding + RECENT_TILE_COLUMNS * cell + 7 * gap
+        height = 2 * padding + header + rows * cell + (rows - 1) * gap
+        left, bottom = right - margin - width, margin
+        cells = []
+        for index, tile in enumerate(tiles):
+            x = left + padding + (index % RECENT_TILE_COLUMNS) * (cell + gap)
+            y = bottom + padding + (rows - 1 - index // RECENT_TILE_COLUMNS) * (cell + gap)
+            cells.append((tile, (x, y, x + cell, y + cell)))
+        return RecentTilesLayout((left, bottom, right - margin, bottom + height), cells)
+
+    def draw(self, scene, region, area, image, mouse_pos):
+        layout = self.layout(scene, region, area, image)
+        if layout is None:
+            return
+        left, bottom, right, top = layout.bounds
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        shader.bind()
+        shader.uniform_float("color", (0.055, 0.055, 0.055, 0.98))
+        draw_rect_fill(shader, left, bottom, right, top)
+        blf_size(0, 11)
+        blf.color(0, 0.9, 0.9, 0.9, 1.0)
+        blf.position(0, left + 8, top - 20, 0)
+        blf.draw(0, f"Recent Tiles  {len(layout.cells)}/{RECENT_TILE_LIMIT}")
+        if not layout.cells:
+            blf.color(0, 0.6, 0.6, 0.6, 1.0)
+            blf.position(0, left + 8, bottom + 20, 0)
+            blf.draw(0, "Select a tile to start")
+            return
+        texture = gpu.texture.from_image(image)
+        image_shader = get_image_shader()
+        width, height = image_size(image)
+        active = RecentTile(scene.sprotile_active_col, scene.sprotile_active_row,
+                            scene.sprotile_tile_size, scene.sprotile_tile_mode)
+        hovered = layout.tile_at(*mouse_pos)
+        for tile, rect in layout.cells:
+            x0, y0, x1, y1 = rect
+            shader.bind()
+            shader.uniform_float("color", (0.13, 0.13, 0.13, 1.0))
+            draw_rect_fill(shader, *rect)
+            tile_w, tile_h = tile_dimensions(tile.size, tile.mode)
+            u, v, span_u, span_v = tile_uv_bounds(tile.col, tile.row, tile_w, tile_h, width, height)
+            scale = (x1 - x0 - 4) / max(tile_w, tile_h)
+            w, h = tile_w * scale, tile_h * scale
+            x, y = (x0 + x1 - w) / 2, (y0 + y1 - h) / 2
+            image_shader.bind()
+            image_shader.uniform_sampler("image", texture)
+            draw_image_quad(image_shader, x, y, x + w, y + h, (u, v, u + span_u, v + span_v))
+            shader.bind()
+            color = ((1.0, 0.85, 0.15, 1.0) if tile == hovered else
+                     (0.0, 0.8, 1.0, 1.0) if tile == active else (0.3, 0.3, 0.3, 1.0))
+            shader.uniform_float("color", color)
+            draw_rect_outline(shader, *rect)
+
+
+_recent_tiles = RecentTiles()
+
+
 def map_face_to_tile(face, uv_layer, col, row, tile_w_px, tile_h_px,
                      atlas_width, atlas_height,
                      rotation=0, flip_u=False, flip_v=False, inset_px=0.0):
@@ -537,6 +681,7 @@ def map_selected_faces_to_active(context):
                     rotation, flip_u, flip_v,
                     inset_px=inset_px,
                 )
+            _recent_tiles.remember(scene, image, col, row)
             mapped_here = True
 
         if mapped_here:
@@ -717,6 +862,7 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         self.pan_start_y = 0
         self.hover_col = -1
         self.hover_row = -1
+        self.mouse_pos = (-1, -1)
         self.image = None
         self.atlas_width = 0
         self.atlas_height = 0
@@ -936,6 +1082,7 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         # coordinates from window space so the picker never jumps.
         mouse_x = event.mouse_x - region.x
         mouse_y = event.mouse_y - region.y
+        self.mouse_pos = (mouse_x, mouse_y)
 
         self.image = resolve_atlas_image(context.active_object)
         if self.image is None:
@@ -971,19 +1118,37 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         if self.mouse_over_other_region(event):
             self.hover_col = -1
             self.hover_row = -1
+            self.mouse_pos = (-1, -1)
             return {'PASS_THROUGH'}
 
         left, width, top = preview_panel_rect(scene, region)
         in_region = 0 <= mouse_x <= region.width and 0 <= mouse_y <= region.height
         in_preview = in_region and (left <= mouse_x <= left + width) and (0 <= mouse_y <= top)
+        recent_layout = _recent_tiles.layout(scene, region, self.area, self.image)
+        in_recent = in_region and recent_layout is not None and recent_layout.contains(mouse_x, mouse_y)
 
-        if not in_preview:
+        if not in_preview or in_recent:
             self.hover_col = -1
             self.hover_row = -1
+        if not in_preview and not in_recent:
             return {'PASS_THROUGH'}
 
         if event.type == 'MOUSEMOVE':
-            self.update_hover(context, mouse_x, mouse_y)
+            if not in_recent:
+                self.update_hover(context, mouse_x, mouse_y)
+            return {'RUNNING_MODAL'}
+
+        if in_recent and event.type in {'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE',
+                                         'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
+            if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
+                tile = recent_layout.tile_at(mouse_x, mouse_y)
+                if tile is not None:
+                    _recent_tiles.select(scene, self.image, tile)
+                    self.last_click_tile = (-1, -1)
+                    self.last_click_time = 0.0
+                    if event.ctrl:
+                        self.map_selected(context)
+            # Consume the panel background, gaps and releases as well.
             return {'RUNNING_MODAL'}
 
         if event.type in {'MIDDLEMOUSE', 'RIGHTMOUSE'} and event.value == 'PRESS':
@@ -1037,6 +1202,7 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
         tile = (self.hover_col, self.hover_row)
         scene.sprotile_active_col = self.hover_col
         scene.sprotile_active_row = self.hover_row
+        _recent_tiles.remember(scene, self.image, *tile)
 
         if event.ctrl:
             self.map_selected(context)
@@ -1263,6 +1429,10 @@ class MESH_OT_sprotile_preview_helper(bpy.types.Operator):
             blf.position(font_id, left + 10, y - 40, 0)
             blf.draw(font_id, "Ctrl+LMB / Double-Click: Map | Esc: Close")
 
+            # Draw after removing the atlas scissor so this independent panel
+            # remains visible at the bottom-right of the viewport.
+            _recent_tiles.draw(scene, region, self.area, self.image, self.mouse_pos)
+
         except Exception:
             # An exception escaping a draw handler leaves the GPU state broken
             # and repeats on every single redraw.
@@ -1357,6 +1527,7 @@ class MESH_OT_sprotile_pipette(bpy.types.Operator):
         scene.sprotile_rotation = str(rotation)
         scene.sprotile_flip_u = flip_u
         scene.sprotile_flip_v = flip_v
+        _recent_tiles.remember(scene, image, col, row)
 
         self.report({'INFO'}, f"Pipetted Tile: ({col}, {row}) {transform_label(rotation, flip_u, flip_v)}")
         tag_redraw_view3d()
@@ -1666,7 +1837,10 @@ class MESH_OT_sprotile_brush_paint(bpy.types.Operator):
         if getattr(_preview_operator, 'area', None) != self.area:
             return False
         left, width, top = preview_panel_rect(scene, region)
-        return left <= mouse_x <= left + width and 0 <= mouse_y <= top
+        if left <= mouse_x <= left + width and 0 <= mouse_y <= top:
+            return True
+        recent_layout = _recent_tiles.layout(scene, region, self.area, _preview_operator.image)
+        return recent_layout is not None and recent_layout.contains(mouse_x, mouse_y)
 
     def paint_at_mouse(self, context):
         from bpy_extras.view3d_utils import (
@@ -1756,6 +1930,7 @@ class MESH_OT_sprotile_brush_paint(bpy.types.Operator):
                         queue.append(nf)
 
         painted_here = False
+        painted_materials = set()
         for f in faces_to_paint:
             atlas_width, atlas_height = target.atlas_dims(f.material_index)
             if atlas_width <= 0 or atlas_height <= 0:
@@ -1768,8 +1943,12 @@ class MESH_OT_sprotile_brush_paint(bpy.types.Operator):
                 inset_px=inset_px,
             )
             painted_here = True
+            painted_materials.add(f.material_index)
 
         if painted_here:
+            for material_index in painted_materials:
+                image = atlas_for_material_index(target.obj, material_index)
+                _recent_tiles.remember(scene, image, col, row)
             self.painted = True
             bmesh.update_edit_mesh(target.me, loop_triangles=False, destructive=False)
 
@@ -1853,6 +2032,7 @@ class VIEW3D_PT_atlas_mapper_panel(bpy.types.Panel):
             col.operator("mesh.sprotile_preview_start", text="Open Atlas Preview", icon='IMAGE_DATA')
         else:
             col.operator("mesh.sprotile_preview_stop", text="Close Atlas Preview", icon='PANEL_CLOSE')
+        col.prop(scene, "sprotile_show_recent_tiles")
 
         in_edit = is_editable_mesh(obj)
         if not in_edit:
@@ -1951,6 +2131,7 @@ def force_cleanup():
     _brush_draw_handles.clear()
 
     _image_shader = None
+    _recent_tiles.clear()
     tag_redraw_view3d()
 
 
@@ -1992,12 +2173,19 @@ _PROPERTY_NAMES = (
     "sprotile_flip_v",
     "sprotile_preview_width",
     "sprotile_preview_left",
+    "sprotile_show_recent_tiles",
     "sprotile_active_col",
     "sprotile_active_row",
 )
 
 
 def _register_properties():
+    bpy.types.Scene.sprotile_show_recent_tiles = BoolProperty(
+        name="Recently-used Tiles",
+        description="Show up to 32 recent tiles at the bottom-right while the atlas preview is open. "
+                    "History is kept per atlas for this session",
+        default=True,
+    )
     bpy.types.Scene.sprotile_tile_size = IntProperty(
         name="Tile Size",
         description="Base size of a full square tile in pixels",
