@@ -1,2 +1,6 @@
-tests/*
-.blend
+__pycache__/
+*.py[cod]
+*.blend
+*.blend[0-9]*
+dist/
+tests/*_results.json

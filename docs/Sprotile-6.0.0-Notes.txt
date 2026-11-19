@@ -1,0 +1,46 @@
+Sprotile 6.0.0
+Blender 4.4 or later
+
+INSTALL OR UPDATE
+Drag Sprotile-6.0.0.zip into Blender, or choose Install from Disk in
+Preferences > Get Extensions. If you use the original 5.3 add-on or
+another single-file version, first disable and remove it in Preferences
+> Add-ons, then restart Blender. Existing extension users can install
+6.0 over their current version.
+
+YOUR FIRST TILE
+Select faces in Edit Mode. In the 3D Viewport sidebar, open Sprotile >
+Map Tiles. On a mesh without an atlas, click Set Up Atlas and choose an
+image. Sprotile assigns a nearest-filtered material to the selected
+untextured faces on the active mesh. Mixed selections keep their existing
+textured faces. A mesh with an atlas is ready for the picker.
+
+Set Tile Size, click Open Picker, choose a tile and click Map Per Face.
+Use Material Preview to see the result. Map as Patch spreads one tile
+across the selection. Undo reverses setup or mapping in a single step.
+
+PAINT AND BLEND
+The Sprotile Paint tool paints a tile on visible faces. Alt+P samples
+the active face. Alt+R turns selected tiles, and Alt+Shift+R turns them
+back. Over the picker, A and B capture the two tiles for a blend.
+
+In Texture Blend, Quick start offers fades, grass and snow edges, paths,
+Paint B and overlays. Blend a seam uses the tiles already on the two
+sides of a selected edge. Select a finished blend to edit, copy or remove
+it. The preset library keeps combinations with the Blender file.
+
+CHANGES FOR 5.17 USERS
+The sidebar shows the current atlas, puts the patch controls together
+and wraps task instructions to fit its width. Switching Quick start tasks
+clears settings that belonged to the previous task. Paint B keeps its
+action available after changing the material setting.
+
+Ordinary painting, Apply Blend and Remove Blend release the affected
+faces from their old path or seam. Update Path respects replacement
+blends, including after saving and reopening the file.
+
+FOR UNREAL
+Prepare UVs for Unreal orders the render, B and Factor UV maps and adds
+the Edge channel to the export order when a blend uses it. The panel
+lists overlay textures and material settings. The repository's user
+guide links the Unreal Custom node code.

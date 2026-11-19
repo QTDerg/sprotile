@@ -1,0 +1,18 @@
+schema_version = "1.0.0"
+
+id = "sprotile"
+version = "6.0.0"
+name = "Sprotile"
+tagline = "Map atlas tiles and blend two textures across mesh patches"
+maintainer = "CrystalFissure"
+type = "add-on"
+
+blender_version_min = "4.4.0"
+
+license = ["SPDX:MIT"]
+copyright = ["2026 QTDerg"]
+website = "https://github.com/QTDerg/sprotile"
+tags = ["UV", "Mesh", "Material"]
+
+[permissions]
+files = "Open atlas images and save overlays beside the blend file"

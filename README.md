@@ -1,33 +1,23 @@
-[Spro](https://www.reddit.com/r/Spyro/comments/132t3ac/spro/) + [Sprytile](https://github.com/Sprytile/Sprytile) = Sprotile
+# Sprotile
 
-This light-weight add-on let's you quickly map faces to a tiles inside texture atlas. The add-on is inspired by Sprytile which doesn't reliably work in newer blender. Initially made for Spaghetti Spyro community, this release hopes to help other people too
+Sprotile maps tiles from a texture atlas onto meshes in Blender 4.4 and later. Paint individual faces, fit one tile across a patch, or blend two tiles along a path or seam.
 
-Setup:
-- Install the add-on
-- Assign a material to the mesh
-- Assign a texture to the material
+## Install
 
-Usage:
-- Select mesh in Object Mode
-- Switch to Edit Mode
-- Select one or more face
-- Press N to summon sidebar
-- Select UV Mapping category
-- Select Open Atlas Preview
-- You may also adjust Tile Size and Tile Mode here
+1. Choose the installable ZIP attached to the release. To build this version from source with Python 3.11 or later, run `python build.py` from the repository root. The output is `dist/Sprotile-6.0.0.zip`. [Releases](https://github.com/QTDerg/sprotile/releases)
+2. If you're upgrading from the original single-file add-on, including upstream 5.3, disable and remove it in **Edit > Preferences > Add-ons**, then restart Blender. If you already use the Sprotile Extension, install the new ZIP over it.
+3. Drag the ZIP into Blender and follow the installation prompt. You can also select **Install from Disk** from the menu in **Edit > Preferences > Get Extensions**.
 
-Controls:
-- Left Mouse Button - Select texture tile
-- Wheel - Zoom
-- Middle or Right Mouse Button Drag - Pan
-- Left-drag the picker's right edge - Resize the picker
-- Left-drag empty space inside the picker (outside atlas tiles) - Move the picker horizontally
-- Release to keep the new layout; Esc or right-click during a layout drag cancels it
+## Map your first tile
 
-Recently-used tiles:
-- Enable Recently-used Tiles in the Sprotile sidebar and open the atlas preview.
-- The bottom-right panel shows up to 32 unique tiles for the current atlas, newest first, in up to four rows of eight.
-- Click a thumbnail to re-select its tile and restore its tile size/mode. Ctrl+click also maps selected faces. Rotation, flips, and UV inset use your current settings.
-- Picking, mapping, painting, and pipetting tiles update the history. History is kept per scene/atlas for the current session; hiding or closing the preview keeps it, loading a file or disabling the add-on clears it.
+1. Select a mesh, press **Tab** for Edit Mode, switch to Face Select, and select the faces to texture.
+2. Press **N** in the 3D Viewport and open **Sprotile > Map Tiles**. If the faces need an atlas, click **Set Up Atlas…** and choose your image. This assigns a nearest-filtered material to the selected faces. You can also use faces that already have an atlas material.
+3. Set **Tile Size** to the atlas cell size in pixels, choose its tile shape, then click **Open Picker**. Click a tile and choose **Map Per Face**. Switch the viewport to **Material Preview** to see the result.
 
-Special thanks to Crystal Fissure for fixing some bugs
+The guide covers the picker, painting, patch mapping, blends, paths, seams, overlays, and Unreal export. [User guide](docs/Guide.md) · [6.0.0 release notes](docs/Sprotile-6.0.0-Notes.txt) · [Blender workflow checks](tests/README.md)
+
+## Credits
+
+Sprotile was created by **QTDerg** for the Spaghetti Spyro community, inspired by **Sprytile**. Its name combines Spro and Sprytile. **CrystalFissure** contributed fixes and the 6.0 update. [Spro](https://www.reddit.com/r/Spyro/comments/132t3ac/spro/) · [Sprytile](https://github.com/Sprytile/Sprytile)
+
+Released under the MIT License. [License](LICENSE)
