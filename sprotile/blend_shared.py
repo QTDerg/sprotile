@@ -221,7 +221,42 @@ def patch_materials(controls):
     return materials
 
 
-def fill_tile_cell(coefficients, image, scene):
+def shared_overlay_image(material, flags):
+    """Read the image from the placed overlay's own bank slot."""
+    code = FIRST_OVERLAY_CODE + ((flags >> 7) & (OVERLAY_INDEX_LIMIT - 1))
+    sampler = shared_nodes(material).get(f'overlay_{code}_alpha')
+    return getattr(sampler, 'image', None)
+
+
+def shared_overlay_cell_size(mesh, faces, bm=None):
+    """Read the stored B grid only when all corners have proven, matching metadata."""
+    required = OVERLAY_FLAG | OVERLAY_CELL_SIZE_FLAG
+    if bm is not None:
+        flags = bm.faces.layers.int.get(SHARED_PATCH_FLAGS)
+        stored = edit_blend_layers(mesh, bm)
+        if flags is None or any(face[flags] & required != required for face in faces):
+            return 0
+        read_z = lambda corner, layer: corner[layer].z
+    else:
+        flags = mesh.attributes.get(SHARED_PATCH_FLAGS)
+        stored = object_blend_layers(mesh)
+        if (flags is None or (flags.domain, flags.data_type) != ('FACE', 'INT')
+                or any(flags.data[face.index].value & required != required for face in faces)):
+            return 0
+        read_z = lambda corner, layer: corner[layer].vector.z
+    if stored.base is None or stored.mask is None:
+        return 0
+    halves = {(read_z(loop, stored.base), read_z(loop, stored.mask))
+              for face in faces for loop in face.loops}
+    if len(halves) != 1:
+        return 0
+    low, high = halves.pop()
+    if 0 <= low <= 0xffff and 0 <= high <= 0x7fff and low.is_integer() and high.is_integer():
+        return int(low) | (int(high) << 16)
+    return 0
+
+
+def fill_tile_cell(coefficients, image, scene, *, tile_size=None):
     """Grow a tile region that Keep Proportions cropped back to its whole tile, keeping turns and inset.
 
     Per Face fills every face's tile, as Apply does. Returns None when the region already fills its cell or
@@ -231,7 +266,7 @@ def fill_tile_cell(coefficients, image, scene):
     if min(width, height) <= 0:
         return None
     u0, v0, du, dv = sample_uv_bounds(coefficients)
-    tile_w, tile_h = get_tile_dims(scene)
+    tile_w, tile_h = tile_size or get_tile_dims(scene)
     if tile_w > width or tile_h > height:
         return None
     x0, y0, x1, y1 = u0 * width, v0 * height, (u0 + du) * width, (v0 + dv) * height
@@ -256,7 +291,7 @@ def fill_tile_cell(coefficients, image, scene):
     return result
 
 
-def retile_loops(groups, mask, layers, per_face, images=None, scene=None):
+def retile_loops(groups, mask, layers, per_face, images=None, scene=None, overlay_cell_size=0):
     """Switch placed patches between Stretch and Per Face without changing their tiles or turns.
 
     Each group is (faces, currently per face). Every group is read and checked before the first write, so a
@@ -268,7 +303,11 @@ def retile_loops(groups, mask, layers, per_face, images=None, scene=None):
         loops = [loop for face in faces for loop in face.loops]
         transforms = sampled_uv_transforms(loops, mask, layers, domain=tile_domain(faces, mask, current))
         if per_face and not current and images is not None and scene is not None:
-            transforms = [fill_tile_cell(t, image, scene) or t for t, image in zip(transforms, images)]
+            a, b = transforms
+            image_a, image_b = images
+            tile_size = (overlay_cell_size, overlay_cell_size) if overlay_cell_size else None
+            transforms = [fill_tile_cell(a, image_a, scene) or a,
+                          fill_tile_cell(b, image_b, scene, tile_size=tile_size) or b]
         plans.append((loops, transforms, tile_domain(faces, mask, per_face)))
     for loops, transforms, domain in plans:
         for loop in loops:
@@ -298,6 +337,7 @@ class _MeshFace:
 def retile_shared_patch(controls, per_face):
     """Rewrite one shared patch's A and B UVs for Per Face or Stretch, in place (no mesh reallocation)."""
     mesh = controls.id_data
+    bm = None
     if mesh.is_editmode:
         bm = bmesh.from_edit_mesh(mesh)
         membership = bm.faces.layers.int.get(SHARED_PATCH_ID)
@@ -305,7 +345,7 @@ def retile_shared_patch(controls, per_face):
         stored = edit_blend_layers(mesh, bm)
         layers = [stored.a, stored.b, stored.mask]
         faces = [face for face in bm.faces if membership is not None and face[membership] == controls.patch_id]
-        first = (faces[0].material_index, flags is not None and bool(faces[0][flags] & OVERLAY_FLAG)) if faces else None
+        first = (faces[0].material_index, faces[0][flags] if flags is not None else 0) if faces else None
     else:
         membership = mesh.attributes.get(SHARED_PATCH_ID)
         flags = mesh.attributes.get(SHARED_PATCH_FLAGS)
@@ -314,20 +354,25 @@ def retile_shared_patch(controls, per_face):
         faces = [_MeshFace([_MeshCorner(index) for index in polygon.loop_indices], polygon.index) for polygon in mesh.polygons
                  if membership is not None and membership.data[polygon.index].value == controls.patch_id]
         first = (mesh.polygons[faces[0].index].material_index,
-                 flags is not None and bool(flags.data[faces[0].index].value & OVERLAY_FLAG)) if faces else None
+                 flags.data[faces[0].index].value if flags is not None else 0) if faces else None
     if membership is None or any(layer is None for layer in layers):
         raise ValueError('Blend UV maps are missing; reapply the blend before changing its tiles')
     if not faces:
         return
     # The tile images let a Keep Proportions crop grow back to the whole tile (fill_tile_cell).
-    material_index, overlay = first
+    material_index, bits = first
+    overlay = bool(bits & OVERLAY_FLAG)
+    cell_size = shared_overlay_cell_size(mesh, faces, bm) if overlay else 0
     material = mesh.materials[material_index] if material_index < len(mesh.materials) else None
     images = None
     if material is not None:
         nodes = shared_nodes(material)
-        images = [getattr(nodes.get('texture_a'), 'image', None),
-                  None if overlay else getattr(nodes.get('texture_b'), 'image', None)]
-    retile_loops([(faces, not per_face)], layers[2], layers[:2], per_face, images, bpy.context.scene)
+        image_b = shared_overlay_image(material, bits) if cell_size else None
+        if not overlay:
+            image_b = getattr(nodes.get('texture_b'), 'image', None)
+        images = (getattr(nodes.get('texture_a'), 'image', None), image_b)
+    retile_loops([(faces, not per_face)], layers[2], layers[:2], per_face, images, bpy.context.scene,
+                 overlay_cell_size=cell_size)
     if mesh.is_editmode:
         bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
     else:
@@ -360,10 +405,10 @@ def _set_shared_patch_property(controls, field, value):
             return
         raise ValueError('Choose New Blend, select Overlay and Apply to set its image first')
     if field == 'edge_style' and value != 3 and shared_patch_property(controls, field, None) == 3:
-        raise ValueError('An overlay\'s B holds a whole image, not a tile; Remove Blend and Apply a new blend instead')
+        raise ValueError('Changing Overlay to another style needs a new blend; Remove Blend and Apply again')
     if field == 'path' and value:
         if shared_patch_property(controls, 'edge_style', 0) == 3:
-            raise ValueError('An overlay covers its whole patch, so it cannot be a path')
+            raise ValueError('Overlay uses the alpha of B instead of a path transition')
         for material in patch_materials(controls):
             validate_shared_path(material)
     if field == 'tiles':
@@ -674,6 +719,7 @@ def apply_shared_texture_blend(context, overrides=None, keep_a=False, split_face
     # Keep A never writes A, so a missing or stale A capture does not matter; B stands in for the checks.
     tile_a = tile_b if keep_a else validated_blend_tile(context.scene.sprotile_blend_a)
     overlay = settings['edge_style'] == 'OVERLAY'
+    cell_size = overlay_capture_cell_size(tile_b) if overlay else 0
     if not overlay and tile_a['image'] != tile_b['image']:
         raise ValueError("Shared Material blends two tiles from the same atlas; choose Separate Material for different images")
     # Check every selected instance before mesh deduplication, including objects
@@ -877,6 +923,11 @@ def apply_shared_texture_blend(context, overrides=None, keep_a=False, split_face
                 if patch_values.tiles == 'FACE':
                     face[flags] |= TILE_FACE_FLAG
                 face[patch] = face_patch_ids[index]
+                if cell_size:
+                    for loop in face.loops:
+                        loop[stored.base].z = cell_size & 0xffff
+                        loop[stored.mask].z = cell_size >> 16
+                    face[flags] |= OVERLAY_CELL_SIZE_FLAG
                 if path_mark is not None:
                     face[path_mark] = 0
                 face.material_index = plan['slots'][index]
@@ -918,13 +969,14 @@ from .draw import tag_redraw_view3d
 from .tiles import edit_mesh_objects, get_tile_dims, image_size, is_editable_mesh, tile_uv_bounds
 from .blend_settings import (
     BLEND_CONTROL_FIELDS, BLEND_MESH_TAG, BLEND_ORIGINAL_MATERIAL, BlendSettings,
-    FIRST_OVERLAY_CODE, LATE_PATCH_FLOATS, OVERLAY_FLAG, PATH_FLAG, SHAPED_EDGES, SHARED_EDGE_UV,
+    FIRST_OVERLAY_CODE, LATE_PATCH_FLOATS, OVERLAY_CELL_SIZE_FLAG, OVERLAY_FLAG, OVERLAY_INDEX_LIMIT,
+    PATH_FLAG, SHAPED_EDGES, SHARED_EDGE_UV,
     SHARED_FACTOR_UV, SHARED_HINT_LIMIT, SHARED_MATERIAL_TAG, SHARED_PATCH_FLAGS, SHARED_PATCH_FLOATS,
     PATH_PAINT_ATTRIBUTE, SHARED_PATCH_ID, TILE_FACE_FLAG, _shared_patch_hints, blend_direction_flag, validated_blend_settings,
     validate_blend_settings, DIRECTION_BITS, PAINTED_FLAG, decode_direction_flag,
 )
 from .blend_plan import (
-    _blend_restore_plan, _blend_restore_uv_choice, _blend_snapshot, prepare_blend_plans, tile_domain,
+    _blend_restore_plan, _blend_restore_uv_choice, _blend_snapshot, overlay_capture_cell_size, prepare_blend_plans, tile_domain,
     validated_blend_tile,
 )
 from .blend_shader import (

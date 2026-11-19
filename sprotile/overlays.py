@@ -9,7 +9,7 @@ import struct
 import hashlib
 from array import array
 import numpy as np
-from bpy.props import IntProperty, FloatProperty, StringProperty, EnumProperty
+from bpy.props import BoolProperty, IntProperty, FloatProperty, StringProperty, EnumProperty
 
 
 def load_black_key_png(path):
@@ -57,16 +57,23 @@ def load_black_key_png(path):
 
 
 class MESH_OT_sprotile_load_overlay_image(bpy.types.Operator):
-    """Use one whole RGBA PNG as B. For one cell of a sheet, put the sheet in the atlas and Capture B"""
+    """Open an overlay PNG for the blend or the Overlay Browser"""
     bl_idname = 'mesh.sprotile_load_overlay_image'
-    bl_label = 'Open PNG as B'
+    bl_label = 'Open Overlay PNG'
     bl_options = {'UNDO'}
     filepath: StringProperty(subtype='FILE_PATH')
+    as_sheet: BoolProperty(default=False, options={'HIDDEN', 'SKIP_SAVE'})
     filter_glob: StringProperty(default='*.png', options={'HIDDEN'})
     transparency: EnumProperty(name='Transparency', items=[
         ('ALPHA', 'PNG alpha', 'Use the transparency saved in the PNG, including soft shadows'),
         ('BLACK', 'Pure black key', 'Pack a copy with exact RGB black clear and every other colour fully opaque')],
         default='ALPHA', options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        if properties.as_sheet:
+            return 'Open a sheet for scanning. Use as B chooses one cell after the scan'
+        return 'Capture the whole PNG as B. For a single cell, open a Separate Sheet in the Overlay Browser'
 
     def draw(self, context):
         self.layout.prop(self, 'transparency')
@@ -94,8 +101,13 @@ class MESH_OT_sprotile_load_overlay_image(bpy.types.Operator):
                 bpy.data.images.remove(image)
             self.report({'WARNING'}, str(error))
             return {'CANCELLED'}
-        use_whole_image_as_b(context.scene, image)
-        self.report({'INFO'}, 'B: '+image.name+'; select the wall faces and Apply')
+        if self.as_sheet:
+            context.scene.sprotile_overlay_sheet = image
+            context.scene.sprotile_overlay_source = 'SHEET'
+            self.report({'INFO'}, f'Opened {image.name}. Choose Cell Size and scan the sheet')
+        else:
+            use_whole_image_as_b(context.scene, image)
+            self.report({'INFO'}, f'B: {image.name}. Select faces and apply the blend')
         return {'FINISHED'}
 
 
@@ -111,7 +123,17 @@ def use_whole_image_as_b(scene, image):
     record.inset_px = 0
     record.sample_uv = (1,0,0,0,1,0)
     record.is_sampled = True
-    scene.sprotile_blend_defaults.edge_style = 'OVERLAY'
+    finish_overlay_capture(scene)
+
+
+def finish_overlay_capture(scene, *, per_face=False):
+    """Expose Apply Blend after an overlay capture, preserving the layout of a whole-PNG capture."""
+    controls = scene.sprotile_blend_defaults
+    tiles = 'FACE' if per_face else controls.tiles
+    if scene.sprotile_blend_task not in {'CUSTOM', 'OVERLAY'}:
+        scene.sprotile_blend_task = 'OVERLAY'
+    controls.edge_style = 'OVERLAY'
+    controls.tiles = tiles
     scene.sprotile_blend_settings_source = 'NEW'
     invalidate_clipboard_slot(scene, 'b')
     reset_preview_interaction()

@@ -57,6 +57,12 @@ def active_blend_material(context):
     return material if material and material.get('sprotile_blend_material') else None
 
 
+def overlay_capture_cell_size(tile):
+    """The square source grid of a B capture, or zero for an unclassified sample."""
+    size = tile['width_px']
+    return size if 0 < size == tile['height_px'] <= min(tile['atlas_width'], tile['atlas_height']) else 0
+
+
 def build_blend_material(tile_a, tile_b, settings, use_tint):
     """Standard Blender nodes; a saved blend renders without this add-on."""
     material = bpy.data.materials.new("Sprotile Blend: " + tile_a['image'].name + " + " + tile_b['image'].name)
@@ -66,6 +72,8 @@ def build_blend_material(tile_a, tile_b, settings, use_tint):
         material.use_backface_culling = True
         material['sprotile_blend_material'] = True
         material['sprotile_blend_tint_used'] = use_tint
+        if settings['edge_style'] == 'OVERLAY' and (size := overlay_capture_cell_size(tile_b)):
+            material[OVERLAY_CELL_SIZE_ATTRIBUTE] = size
         nodes, links = material.node_tree.nodes, material.node_tree.links
         nodes.clear()
 
@@ -394,7 +402,8 @@ def _blend_snapshot(plan):
                 metadata={index: {name: bm.faces[index][layer] for name, layer in metadata.items() if layer is not None}
                           for index, _ in plan['faces']},
                 faces=[(index, face.material_index, face[previous] if previous else 0,
-                        {name: [tuple(corner_uv(loop, layer)) for loop in face.loops]
+                        {name: [tuple(loop[layer] if name in ('base', 'mask') else corner_uv(loop, layer))
+                                for loop in face.loops]
                          for name, layer in layers.items() if layer})
                        for index, _ in plan['faces'] for face in (bm.faces[index],)])
 
@@ -549,7 +558,8 @@ from .blend_settings import (
     BLEND_B_UV, BLEND_BASE_ATTRIBUTE, BLEND_CONTROL_FIELDS, BLEND_MASK_ATTRIBUTE, BLEND_MESH_TAG,
     BLEND_ORIGINAL_MATERIAL, BLEND_TILE_FIELDS, INTERNAL_BLEND_UVS, LEGACY_A_UV, LEGACY_MASK_UV,
     SHARED_EDGE_UV, SHARED_FACTOR_UV,
-    PATH_PAINT_ATTRIBUTE, SHARED_MATERIAL_TAG, SHARED_PATCH_FLAGS, SHARED_PATCH_FLOATS, SHARED_PATCH_ID, TILE_FACE_FLAG,
+    OVERLAY_CELL_SIZE_ATTRIBUTE, PATH_PAINT_ATTRIBUTE, SHARED_MATERIAL_TAG, SHARED_PATCH_FLAGS, SHARED_PATCH_FLOATS,
+    SHARED_PATCH_ID, TILE_FACE_FLAG,
     blend_nodes, read_rectangle_corners, update_blend_graph, validated_blend_settings,
 )
 from .blend_storage import (

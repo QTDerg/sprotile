@@ -322,9 +322,14 @@ def blend_recipe_from_face(obj,bm,face,source_faces=None,reader=None):
                 raise ValueError('Grass-edge coordinates differ from their settings; reapply before copying')
     transforms = sampled_uv_transforms(loops,layers[2],layers[:2],domain=tile_domain(faces,layers[2],settings['tiles']=='FACE'))
     recipe = dict(settings=settings,mode='SEPARATE' if separate else 'SHARED')
+    overlay_cell_size = 0
+    if settings['edge_style'] == 'OVERLAY':
+        overlay_cell_size = (material.get(OVERLAY_CELL_SIZE_ATTRIBUTE, 0) if separate
+                             else shared_overlay_cell_size(obj.data, faces, bm))
     for slot,image,transform in zip(('a','b'),images,transforms):
         width,height = image_size(image)
-        recipe[slot] = dict(image=image,col=0,row=0,atlas_width=width,atlas_height=height,width_px=0,height_px=0,
+        size = overlay_cell_size if slot == 'b' else 0
+        recipe[slot] = dict(image=image,col=0,row=0,atlas_width=width,atlas_height=height,width_px=size,height_px=size,
                             rotation=0,flip_u=False,flip_v=False,inset_px=0.,sample_uv=transform,is_sampled=True)
     return recipe
 
@@ -458,7 +463,8 @@ from .tiles import (
 from .mapping import connected_face_patches
 from .blend_settings import (
     BLEND_B_UV, BLEND_CONTROL_FIELDS, BLEND_DIRECTIONS, BlendSettings, FIRST_OVERLAY_CODE,
-    LATE_PATCH_FLOATS, OVERLAY_FLAG, OVERLAY_INDEX_LIMIT, PATH_FLAG, SHAPED_EDGES, SHARED_EDGE_UV,
+    LATE_PATCH_FLOATS, OVERLAY_CELL_SIZE_ATTRIBUTE, OVERLAY_FLAG, OVERLAY_INDEX_LIMIT, PATH_FLAG, SHAPED_EDGES,
+    SHARED_EDGE_UV,
     SHARED_FACTOR_UV, SHARED_MATERIAL_TAG, SHARED_PATCH_FLAGS, SHARED_PATCH_FLOATS, SHARED_PATCH_ID,
     TILE_FACE_FLAG, blend_axis, blend_nodes, check_separate_path, validate_blend_settings,
     validated_blend_settings, decode_direction_flag,
@@ -468,7 +474,7 @@ from .blend_shader import (
     check_separate_overlay, is_path, shared_edge_mapper, shared_factor_mapper, shared_nodes,
     shared_overlay_bank, validate_grass_profile, validate_shared_grass, validate_shared_path,
 )
-from .blend_shared import active_shared_patch, blend_copies, apply_shared_texture_blend
+from .blend_shared import active_shared_patch, blend_copies, apply_shared_texture_blend, shared_overlay_cell_size
 from .blend_alpha import shared_alpha_strength
 from .blend_ops import invalidate_clipboard_slot, reset_preview_interaction
 from .blend_storage import blend_uv_maps_needed, corner_uv, edit_blend_layers, is_mask_node, mask_socket

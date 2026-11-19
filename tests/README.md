@@ -17,3 +17,7 @@ Use the same command with any of the following scripts. Each suite creates its o
 | `test_compact_storage.py` | UV storage, opening older blends and FBX export |
 | `test_overlay_browser.py` | Atlas scans, filters, edited images and tile bounds |
 | `test_overlay_maker.py` | Soft-edged overlays and preparing UVs for Unreal |
+| `test_external_overlay_workflows.py` | External overlay cell size through placement, turning, copying, saving, Join and rollback |
+| `test_overlay_sheet_render.py` | Rendered pixels from two overlay cells before and after reopening the packed project |
+| `test_workflow_ui_574.py` | Editing controls and deferred cell previews |
+| `test_blend_library_auto.py` | Automatic preset reuse and preserving editable source grids |

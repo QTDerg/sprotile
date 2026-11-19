@@ -115,20 +115,26 @@ def selected_blend_patches(obj, bm):
     return groups
 
 
-def blend_patch_image(obj, bm, face, slot):
-    """The image texture A or B of a placed patch samples, or None if unknown."""
+def blend_turn_source(obj, bm, faces, slot):
+    """Image and optional source grid for refitting a placed blend texture."""
+    face = faces[0]
     if face.material_index >= len(obj.material_slots):
-        return None
+        return None, None
     material = obj.material_slots[face.material_index].material
     if material is None:
-        return None
+        return None, None
     role = 'texture_a' if slot == 'A' else 'texture_b'
     if material.get('sprotile_blend_material'):
-        return getattr(blend_nodes(material).get(role), 'image', None)
+        image = getattr(blend_nodes(material).get(role), 'image', None)
+        if slot == 'B' and material.sprotile_blend_controls.edge_style == 'OVERLAY':
+            size = material.get(OVERLAY_CELL_SIZE_ATTRIBUTE, 0)
+            return (image, (size, size)) if size > 0 else (None, None)
+        return image, None
     flags = bm.faces.layers.int.get(SHARED_PATCH_FLAGS)
     if slot == 'B' and flags is not None and face[flags] & OVERLAY_FLAG:
-        return None  # A whole overlay PNG keeps its own region.
-    return getattr(shared_nodes(material).get(role), 'image', None)
+        size = shared_overlay_cell_size(obj.data, faces, bm)
+        return (shared_overlay_image(material, face[flags]), (size, size)) if size else (None, None)
+    return getattr(shared_nodes(material).get(role), 'image', None), None
 
 
 def surface_scale(faces, mask, matrix_world):
@@ -154,7 +160,7 @@ def surface_scale(faces, mask, matrix_world):
     return along_u / total, along_v / total
 
 
-def proportional_quarter_turn(coefficients, action, faces, mask, matrix_world, image, scene):
+def proportional_quarter_turn(coefficients, action, faces, mask, matrix_world, image, scene, *, tile_size=None):
     """A quarter turn that keeps texels square, or None for a plain turn.
 
     Turning inside the old atlas rectangle is exact when that rectangle is
@@ -179,7 +185,7 @@ def proportional_quarter_turn(coefficients, action, faces, mask, matrix_world, i
     density_v = math.hypot(b * width, e * height) / scale[1]
     if abs(density_u - density_v) > 0.02 * max(density_u, density_v):
         return None
-    tile_w, tile_h = get_tile_dims(scene)
+    tile_w, tile_h = tile_size or get_tile_dims(scene)
     if tile_w > width or tile_h > height:
         return None
     x0, y0, x1, y1 = u0 * width, v0 * height, (u0 + du) * width, (v0 + dv) * height
@@ -247,8 +253,9 @@ def turn_blend_patches(context, slot, action):
             coefficients = sampled_uv_transforms(loops, mask, [layer], domain=domain)[0]
             turned = None
             if action in {'CW', 'CCW'} and not per_face:   # Per Face fills each face's tile, as painting does
+                image, tile_size = blend_turn_source(obj, bm, faces, slot)
                 turned = proportional_quarter_turn(coefficients, action, faces, mask, obj.matrix_world,
-                                                   blend_patch_image(obj, bm, faces[0], slot), context.scene)
+                                                   image, context.scene, tile_size=tile_size)
             plans.append((loops, layer, domain, turned or turned_sample_uv(coefficients, action)))
     for loops, layer, domain, coefficients in plans:
         for loop in loops:
@@ -445,7 +452,8 @@ from .tiles import (
 from .mapping import connected_face_patches, validate_plain_material_uv
 from .picker import tile_cell_from_uvs
 from .blend_settings import (
-    INTERNAL_BLEND_UVS, OVERLAY_FLAG, SHARED_EDGE_UV, SHARED_FACTOR_UV, SHARED_MATERIAL_TAG, SHARED_PATCH_FLAGS,
+    INTERNAL_BLEND_UVS, OVERLAY_CELL_SIZE_ATTRIBUTE, OVERLAY_FLAG, SHARED_EDGE_UV, SHARED_FACTOR_UV,
+    SHARED_MATERIAL_TAG, SHARED_PATCH_FLAGS,
     SHARED_PATCH_ID, blend_nodes,
 )
 from .blend_plan import patch_tiles_per_face, tile_domain, validated_blend_tile
@@ -453,4 +461,4 @@ from .blend_shader import shared_nodes
 from .blend_recipes import affine_uv, sample_uv_bounds, sampled_uv_transforms
 from .blend_ops import invalidate_clipboard_slot
 from .blend_storage import edit_blend_layers, upgrade_file_blends
-from .blend_shared import separate_selected_blend_copies
+from .blend_shared import separate_selected_blend_copies, shared_overlay_cell_size, shared_overlay_image

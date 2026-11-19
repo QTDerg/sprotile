@@ -57,6 +57,8 @@ EDGE_STYLES=[('PLAIN','Straight','Standard straight transition'),('GRASS','Grass
              ('OVERLAY','Overlay','Lay B over A using the alpha channel of B')]
 SHAPED_EDGES = {'GRASS', 'SNOW'}
 OVERLAY_FLAG = 64
+OVERLAY_CELL_SIZE_ATTRIBUTE = 'sprotile_overlay_cell_size'
+OVERLAY_CELL_SIZE_FLAG = 1 << 15
 FIRST_OVERLAY_CODE = 3  # Factor V 0, 1 and 2 already mean ordinary, linear and smooth.
 # Paths put B in a band with A on both sides. Factor U holds the distance from the path's centre line in units of
 # its outer half-width (the band plus half the feather), so |U| <= 1 covers the band and its fade. Factor V is 1 or 2

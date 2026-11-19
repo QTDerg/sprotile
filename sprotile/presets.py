@@ -21,7 +21,7 @@ def tile_as_sample(tile):
     coeff = tuple(value for axis in (0,1) for value in
                   (points[1][axis]-points[0][axis],points[2][axis]-points[0][axis],points[0][axis]))
     sample_uv_bounds(coeff)
-    return dict(tile,is_sampled=True,sample_uv=coeff,width_px=0,height_px=0,col=0,row=0,rotation=0,flip_u=False,flip_v=False,inset_px=0.)
+    return dict(tile,is_sampled=True,sample_uv=coeff,rotation=0,flip_u=False,flip_v=False,inset_px=0.)
 
 
 def preset_recipe(preset):
@@ -155,11 +155,56 @@ def stored_preview_icon(key,text):
 
 
 def clipboard_preview_source(scene,slot):
-    tile=tile_as_sample(validated_blend_tile(getattr(scene,'sprotile_blend_'+slot)))
-    image=tile['image']
-    show_alpha = slot == 'b' and scene.sprotile_blend_defaults.edge_style == 'OVERLAY'
+    if slot == 'overlay_cell':
+        from .overlay_browser import scan_matches, selected_overlay_cell
+        from .overlay_scan import OVERLAY_THUMBNAIL_READ_LIMIT, overlay_thumbnail_pixels
+
+        image = scene.sprotile_overlay_scan_image
+        item = selected_overlay_cell(scene)
+        if item is None or not scan_matches(scene, image):
+            raise ValueError('Select a cell from the current overlay scan')
+        if scene.sprotile_overlay_source == 'SHEET':
+            if scene.sprotile_overlay_sheet != image:
+                raise ValueError('The overlay sheet changed; scan it again')
+        else:
+            captured_image = scene.sprotile_blend_a.image
+            if captured_image is not None and captured_image != image and min(captured_image.size) > 0:
+                raise ValueError('The captured atlas changed; scan it again')
+        width, height, cell = scene.sprotile_overlay_scan_grid
+        if cell <= 0 or not (0 <= item.col < width // cell and 0 <= item.row < height // cell):
+            raise ValueError('The selected overlay cell is outside the atlas')
+        pixels = overlay_thumbnail_pixels(image, cell, item.col, item.row)
+        # Blender's RNA slice can copy the entire float buffer before returning the requested rows.
+        if pixels is None and width * height * 16 > OVERLAY_THUMBNAIL_READ_LIMIT:
+            raise ValueError('Scan the atlas to refresh the thumbnail')
+        u, v, du, dv = tile_uv_bounds(item.col, item.row, cell, cell, width, height, inset_px=0.0)
+        tile = dict(image=image, atlas_width=width, atlas_height=height, sample_uv=(du, 0., u, 0., dv, v),
+                    preview_pixels=pixels)
+        show_alpha = True
+    else:
+        tile=tile_as_sample(validated_blend_tile(getattr(scene,'sprotile_blend_'+slot)))
+        image=tile['image']
+        show_alpha = slot == 'b' and scene.sprotile_blend_defaults.edge_style == 'OVERLAY'
     return tile,(image.session_uid,tile['atlas_width'],tile['atlas_height'],tuple(tile['sample_uv']),image.is_dirty,
                  image.alpha_mode,show_alpha)
+
+
+def clipboard_pixel_sampler(tile, show_alpha):
+    """Sample in local tile coordinates, using reduced scan pixels when present."""
+    pixels = tile.get('preview_pixels')
+    if pixels is not None:
+        height, width = pixels.shape[:2]
+
+        def sample(uv):
+            r, g, b, alpha = pixels[int(uv[1] * height), int(uv[0] * width)]
+            return float(r), float(g), float(b), min(1.0, max(0.0, float(alpha)))
+
+        return sample
+    coeff = tile['sample_uv']
+    bounds = [affine_uv(coeff, uv) for uv in ((0, 0), (1, 0), (1, 1), (0, 1))]
+    sampler = (image_rgb_sampler(tile['image'], bounds, with_alpha=True) if show_alpha
+               else image_rgb_sampler(tile['image'], bounds))
+    return lambda uv: sampler(affine_uv(coeff, uv))
 
 
 def process_clipboard_previews():
@@ -170,14 +215,12 @@ def process_clipboard_previews():
         try:
             tile,current=clipboard_preview_source(scene,key[1])
             if signature==current:
-                bounds = [affine_uv(tile['sample_uv'],uv) for uv in ((0,0),(1,0),(1,1),(0,1))]
                 show_alpha = current[-1]
-                sample = (image_rgb_sampler(tile['image'],bounds,with_alpha=True) if show_alpha
-                          else image_rgb_sampler(tile['image'],bounds))
+                sample = clipboard_pixel_sampler(tile, show_alpha)
                 pixels=[]
                 for y in range(48):
                     for x in range(48):
-                        rgb = sample(affine_uv(tile['sample_uv'],((x+.5)/48,(y+.5)/48)))
+                        rgb = sample(((x+.5)/48,(y+.5)/48))
                         if show_alpha:
                             gray = .4 if (x//6+y//6)%2 else .6
                             rgb = tuple(gray+(v-gray)*rgb[3] for v in rgb[:3])
@@ -349,8 +392,14 @@ def ensure_preset_for_recipe(scene,recipe,name_hint):
     """Add the recipe to the library unless an identical one is there; returns the new name or None."""
     for preset in scene.sprotile_blend_presets:
         try:
-            # Shared and Separate Material versions of one look are different presets (Load restores the mode).
-            if recipe.get('mode', preset.material_mode) == preset.material_mode and recipes_match(recipe,preset_recipe(preset)):
+            if recipe.get('mode', preset.material_mode) != preset.material_mode:
+                continue
+            saved = preset_recipe(preset)
+            # Find Uses compares the look. Loading a preset also restores the grid used for future refits.
+            if (recipe['settings']['edge_style'] == 'OVERLAY' and
+                    overlay_capture_cell_size(recipe['b']) != overlay_capture_cell_size(saved['b'])):
+                continue
+            if recipes_match(recipe, saved):
                 return None
         except ValueError:continue
     name=(name_hint or '').strip() or 'New blend'
@@ -568,7 +617,7 @@ from .blend_settings import (
     BlendSettings, EDGE_STYLES, SHAPED_EDGES, SHARED_MATERIAL_TAG, SHARED_PATCH_ID, blend_axis,
     read_rectangle_corners, validated_blend_settings,
 )
-from .blend_plan import validated_blend_tile
+from .blend_plan import overlay_capture_cell_size, validated_blend_tile
 from .blend_shader import shader_factor, shared_edge_mapper, shared_factor_mapper
 from .blend_shared import active_shared_patch
 from .blend_recipes import (

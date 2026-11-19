@@ -4,8 +4,9 @@ Only what the Unreal master reads is a UV map:
 - tile A goes into the render UV map, the map the atlas material already samples (Unreal's UV0);
 - tile B, Factor and, for grass or snow, Edge stay UV maps.
 What only Sprotile reads is a corner attribute, which FBX export leaves out:
-- `sprotile_blend_mask`, the patch layout (x, y; z unused) that every tool reads a placed blend back from;
-- `sprotile_blend_base`, each blended face's previous tile, which Remove Blend puts back.
+- `sprotile_blend_mask`, the patch layout (x, y) that every tool reads a placed blend back from;
+- `sprotile_blend_base`, each blended face's previous tile (x, y), which Remove Blend puts back.
+  Overlay cells store their source grid in base Z and mask Z, as low and high 16-bit halves.
 
 Sprotile 5.12 and earlier kept A and the Mask in UV maps of their own (SprotileBlend_A, SprotileBlend_Mask).
 upgrade_file_blends() moves such meshes and their materials to this layout when a file loads and before every
@@ -44,11 +45,11 @@ def set_corner_uv(corner, layer, value):
     if type(item) is BMLoopUV:
         item.uv = value
     elif type(item) is Vector:
-        corner[layer] = (value[0], value[1], 0.0)
+        corner[layer] = value if len(value) == 3 else (*value, 0.0)
     elif hasattr(item, 'uv'):
         item.uv = value
     else:
-        item.vector = (value[0], value[1], 0.0)
+        item.vector = value if len(value) == 3 else (*value, 0.0)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,31 @@
+Sprotile 6.1.0
+Blender 4.4 or later
+
+OVERLAYS FROM A SEPARATE SHEET
+Choose Overlay cell in Texture Blend and capture your base tile as A.
+In Overlay Browser, choose Separate Sheet. Select an image already in
+Blender, or click Open Sheet and choose a PNG. Set Cell Size for the
+sheet, click Scan Overlay Cells, then select a row to preview it.
+
+Use as B captures the selected cell and makes Apply Blend available.
+The base atlas, its tile size and the previous B stay as they were
+while you browse. Each shared material uses one overlay texture slot
+for the sheet, even if you place several different cells from it.
+
+Mesh Atlas still scans the captured A atlas or the active face's atlas.
+Open PNG as B still captures an entire image and keeps its layout.
+
+EDITING AND PREVIEWS
+New square overlay-cell blends remember their source grid when you turn,
+copy, save or reapply them. For older overlays without a recorded grid,
+editing preserves the existing UV footprint.
+
+Scan results use full-resolution image pixels. The selected-cell preview
+uses a checkerboard for transparency. Reduced preview texels from the
+most recent scan use up to 8 MiB of session memory. Rescan after editing
+an image or reopening a large sheet to refresh the previews.
+
+INSTALL
+Drag Sprotile-6.1.0.zip into Blender. It updates the 6.0 extension in
+place. If you still use the 5.3 single-file add-on, disable and remove
+it in Preferences > Add-ons, then restart Blender before installing.

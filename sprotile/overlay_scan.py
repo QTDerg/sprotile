@@ -1,11 +1,16 @@
 """Read complete atlas cells in picker order and classify those that mix clear and solid texels."""
 
 from collections import OrderedDict
+from math import isqrt
 
 import numpy as np
 
 ALPHA_CUTOFF = .5
+OVERLAY_THUMBNAIL_BUDGET = 8 * 1024 * 1024
+OVERLAY_THUMBNAIL_EDGE = 48
+OVERLAY_THUMBNAIL_READ_LIMIT = 32 * 1024 * 1024
 _scan_cache = OrderedDict()
+_thumbnail_cache = None
 
 
 def classify_colour(rgb):
@@ -35,11 +40,57 @@ def scan_key(image, cell):
     return image.session_uid, tuple(image.size), image.filepath, image.alpha_mode, image.colorspace_settings.name, cell
 
 
+def clear_overlay_thumbnail_cache():
+    global _thumbnail_cache
+    _thumbnail_cache = None
+
+
+def _cache_overlay_thumbnails(image, cell, pixels, found):
+    """Keep reduced pixels from the latest explicit scan, using a fixed byte budget."""
+    global _thumbnail_cache
+    count = len(found)
+    index_bytes = count * np.dtype(np.uint64).itemsize
+    texel_budget = (OVERLAY_THUMBNAIL_BUDGET - index_bytes) // (count * 4 * pixels.itemsize) if count else 0
+    if texel_budget < 1:
+        return
+    side = min(cell, OVERLAY_THUMBNAIL_EDGE, isqrt(texel_budget))
+    offsets = ((2 * np.arange(side) + 1) * cell) // (2 * side)
+    height, width = pixels.shape[:2]
+    cols = width // cell
+    indices = np.empty(count, dtype=np.uint64)
+    thumbnails = np.empty((count, side, side, 4), dtype=pixels.dtype)
+    for index, (col, row, _kind, _colour) in enumerate(found):
+        y, x = height - (row + 1) * cell, col * cell
+        indices[index] = row * cols + col
+        thumbnails[index] = pixels[y + offsets[:, None], x + offsets]
+    _thumbnail_cache = (scan_key(image, cell), bool(image.is_dirty), indices, thumbnails)
+
+
+def overlay_thumbnail_pixels(image, cell, col, row):
+    """Return the selected cell's reduced RGBA pixels without reading the image buffer."""
+    if _thumbnail_cache is None:
+        return None
+    key, dirty, indices, thumbnails = _thumbnail_cache
+    if key != scan_key(image, cell) or dirty != bool(image.is_dirty):
+        return None
+    width, height = key[1]
+    cols = width // cell
+    if not (0 <= col < cols and 0 <= row < height // cell):
+        return None
+    cell_index = row * cols + col
+    index = np.searchsorted(indices, np.uint64(cell_index))
+    if index < len(indices) and int(indices[index]) == cell_index:
+        return thumbnails[index]
+    return None
+
+
 def scan_overlay_cells(image, cell=64, force=False):
     """Every overlay cell of `image` as (col, row, kind, (r, g, b)); row 0 is the top row, like the picker."""
     width, height = (int(v) for v in image.size)
     cell = max(1, int(cell))
-    if width < cell or height < cell:
+    if force:
+        clear_overlay_thumbnail_cache()
+    if cell == 1 or width < cell or height < cell:
         return []
     if not image.has_data:
         image.reload()
@@ -67,6 +118,12 @@ def scan_overlay_cells(image, cell=64, force=False):
             texels = block[:, col][solid[:, col]][:, :3]
             rgb = tuple(float(v) for v in texels.mean(axis=0))
             found.append((int(col), row, classify_colour(rgb), rgb))
+    if force:
+        try:
+            _cache_overlay_thumbnails(image, cell, pixels, found)
+        except MemoryError:
+            # The cell list is complete even if the optional preview buffer does not fit.
+            clear_overlay_thumbnail_cache()
     _scan_cache[key] = found
     _scan_cache.move_to_end(key)
     if len(_scan_cache) > 8:

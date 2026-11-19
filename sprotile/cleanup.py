@@ -58,6 +58,7 @@ def force_cleanup():
     forget_occluders()
     _draw_cache.clear()
     _scan_cache.clear()
+    clear_overlay_thumbnail_cache()
     _recent_tiles.clear()
     _shared_patch_hints.clear()
     _preview_views.clear()
@@ -78,5 +79,5 @@ from .tiles import _recent_tiles
 from .blend_settings import _shared_patch_hints
 from .presets import clear_preset_previews, process_clipboard_previews
 from .blend_list import _draw_cache
-from .overlay_scan import _scan_cache
+from .overlay_scan import _scan_cache, clear_overlay_thumbnail_cache
 from .brush import forget_occluders

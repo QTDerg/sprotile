@@ -6,7 +6,7 @@ import bmesh
 import math
 
 
-def draw_blend_inputs(layout,scene,can_copy=True):
+def draw_blend_inputs(layout,scene,can_copy=True, *, context=None):
     if can_copy:
         layout.operator('mesh.sprotile_pick_blend',text='Copy Blend from Active Face',icon='EYEDROPPER')
     row=layout.row(align=True)
@@ -16,6 +16,7 @@ def draw_blend_inputs(layout,scene,can_copy=True):
     a,b=scene.sprotile_blend_a,scene.sprotile_blend_b
     if not a.image and not b.image:
         return
+    picker_image = resolve_atlas_image((context or bpy.context).active_object)
     box=layout.box()
     if a.image and a.image==b.image:box.label(text=a.image.name,icon='IMAGE_DATA')
     thumbs=box.row(align=True)
@@ -23,7 +24,6 @@ def draw_blend_inputs(layout,scene,can_copy=True):
         record=getattr(scene,'sprotile_blend_'+slot.lower());col=thumbs.column(align=True)
         if record.image:
             whole = record.is_sampled and tuple(record.sample_uv) == (1,0,0,0,1,0)
-            external_overlay = slot == 'B' and scene.sprotile_blend_defaults.edge_style == 'OVERLAY' and a.image != b.image and whole
             label = 'full image' if whole else 'copied'
             if record.is_sampled:
                 text = slot + ': ' + label
@@ -36,7 +36,7 @@ def draw_blend_inputs(layout,scene,can_copy=True):
             icon=clipboard_preview_icon(scene,slot.lower())
             if icon:col.template_icon(icon_value=icon.icon_id,scale=3)
             draw_turn_buttons(col, 'mesh.sprotile_turn_blend_tile', slot, stacked=True)
-            if not external_overlay:
+            if record.image == picker_image:
                 col.operator('mesh.sprotile_focus_atlas',text='Find '+slot,icon='VIEWZOOM').target=slot
         else:col.label(text='Capture '+slot,icon='IMAGE_DATA')
     if a.image!=b.image:
@@ -252,7 +252,7 @@ class VIEW3D_PT_sprotile_blend(bpy.types.Panel):
             note.label(text=state.last_control_refusal, icon='ERROR')
         draw_paint_mode_controls(layout, context)
         if not editing:draw_quick_start(layout, scene, BlendFeatures(**{name: feature_enabled(context, 'show_' + name) for name in ('paths', 'overlays')}))
-        if not editing and scene.sprotile_blend_task != 'SEAM':draw_blend_inputs(layout,scene,can_copy=has_active)
+        if not editing and scene.sprotile_blend_task != 'SEAM':draw_blend_inputs(layout,scene,can_copy=has_active,context=context)
         mismatch = set()
         obj = context.active_object
         for slot in (obj.material_slots if obj is not None and obj.type == 'MESH' else ()):
@@ -312,7 +312,7 @@ class VIEW3D_PT_sprotile_blend(bpy.types.Panel):
             header,inputs=layout.panel('sprotile_next_blend_tiles',default_closed=True)
             header.label(text='New Blend tiles')
             if inputs:
-                draw_blend_inputs(inputs,scene)
+                draw_blend_inputs(inputs,scene,context=context)
                 inputs.label(text='Switch to New Blend to apply them')
         elif task not in {'PAINTED', 'PATH_BRUSH', 'SEAM'}:   # those tasks have their own button in the box above
             layout.operator('mesh.sprotile_apply_blend', text='Apply Blend', icon='SHADING_RENDERED')
@@ -355,7 +355,7 @@ class VIEW3D_PT_sprotile_blend(bpy.types.Panel):
 # definitions so that modules which use each other can load (see __init__.py).
 from .core import feature_enabled
 from . import state
-from .tiles import edit_mesh_objects, is_editable_mesh, transform_is_default, transform_label
+from .tiles import edit_mesh_objects, is_editable_mesh, resolve_atlas_image, transform_is_default, transform_label
 from .blend_settings import EDGE_STYLES, SHAPED_EDGES, TILE_MODES
 from .blend_plan import active_blend_material
 from .blend_shader import shared_atlas_mismatch

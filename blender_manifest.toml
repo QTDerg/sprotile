@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "sprotile"
-version = "6.0.0"
+version = "6.1.0"
 name = "Sprotile"
 tagline = "Map atlas tiles and blend two textures across mesh patches"
 maintainer = "CrystalFissure"

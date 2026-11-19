@@ -13,7 +13,7 @@ constants while their modules load.
 
 bl_info = {
     "name": "Sprotile",
-    "version": (6, 0, 0),
+    "version": (6, 1, 0),
     "author": "QTDerg, CrystalFissure",
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > Sprotile | View3D > Toolbar (Edit Mode)",
@@ -266,6 +266,9 @@ _PROPERTY_NAMES = (
     'sprotile_overlay_cells',
     'sprotile_overlay_scan_grid',
     'sprotile_overlay_scan_image',
+    'sprotile_overlay_sheet',
+    'sprotile_overlay_sheet_size',
+    'sprotile_overlay_source',
     'sprotile_rectangle_corner_mode',
     "sprotile_blend_a",
     "sprotile_blend_b",

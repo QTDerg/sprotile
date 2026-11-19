@@ -5,7 +5,8 @@ from bpy.props import (CollectionProperty, EnumProperty, FloatVectorProperty, In
                        IntVectorProperty, PointerProperty, StringProperty)
 
 # Keep the original Python entry points available to scripts that browse an atlas.
-from .overlay_scan import classify_colour, overlay_cells, scan_key, scan_overlay_cells
+from .overlay_scan import (OVERLAY_THUMBNAIL_READ_LIMIT, classify_colour, overlay_cells,
+                           overlay_thumbnail_pixels, scan_key, scan_overlay_cells)
 
 OVERLAY_KINDS = [('grass', 'Grass', 'Green, olive and yellow-green fringes'),
                  ('snow', 'Snow', 'White, pale blue or pale violet cells'),
@@ -22,6 +23,19 @@ def overlay_atlas_image(context):
     return resolve_atlas_image(context.active_object)
 
 
+def browser_image(context):
+    scene = context.scene
+    if scene.sprotile_overlay_source == 'SHEET':
+        return scene.sprotile_overlay_sheet
+    return overlay_atlas_image(context)
+
+
+def browser_cell_size(scene):
+    if scene.sprotile_overlay_source == 'SHEET':
+        return scene.sprotile_overlay_sheet_size
+    return scene.sprotile_tile_size
+
+
 class SprotileOverlayCell(bpy.types.PropertyGroup):
     col: IntProperty()
     row: IntProperty()
@@ -31,7 +45,7 @@ class SprotileOverlayCell(bpy.types.PropertyGroup):
 
 def scan_matches(scene, image):
     return (image is not None and scene.sprotile_overlay_scan_image == image and
-            tuple(scene.sprotile_overlay_scan_grid) == (*image.size, scene.sprotile_tile_size))
+            tuple(scene.sprotile_overlay_scan_grid) == (*image.size, browser_cell_size(scene)))
 
 
 def matches_kind(item, kind):
@@ -70,30 +84,33 @@ class SPROTILE_UL_overlay_cells(bpy.types.UIList):
 
 
 class MESH_OT_sprotile_scan_overlay_cells(bpy.types.Operator):
-    """Find the cells of the atlas that mix clear and solid pixels"""
+    """Read the selected image and list its complete cells that mix clear and solid pixels"""
     bl_idname = 'mesh.sprotile_scan_overlay_cells'
     bl_label = 'Scan Overlay Cells'
     bl_options = {'REGISTER'}
 
     def execute(self, context):
         scene = context.scene
-        image = overlay_atlas_image(context)
+        image = browser_image(context)
         if image is None or min(image.size) <= 0:
-            self.report({'WARNING'}, 'Select a mesh with an atlas, or capture A, first')
+            self.report({'WARNING'}, 'Choose a loaded overlay sheet or a mesh atlas with image data')
             return {'CANCELLED'}
+        cell_size = browser_cell_size(scene)
         try:
-            cells = scan_overlay_cells(image, scene.sprotile_tile_size, force=True)
+            validate_tile_dimensions(cell_size, cell_size, *image.size)
+            cells = scan_overlay_cells(image, cell_size, force=True)
         except (RuntimeError, MemoryError, ValueError) as error:
-            self.report({'WARNING'}, 'Could not read the atlas pixels: ' + str(error))
+            self.report({'WARNING'}, str(error))
             return {'CANCELLED'}
         scene.sprotile_overlay_cells.clear()
         for col, row, kind, rgb in cells:
             item = scene.sprotile_overlay_cells.add()
             item.col, item.row, item.kind, item.color = col, row, kind, rgb
         scene.sprotile_overlay_scan_image = image
-        scene.sprotile_overlay_scan_grid = (*image.size, scene.sprotile_tile_size)
+        scene.sprotile_overlay_scan_grid = (*image.size, cell_size)
         scene.sprotile_overlay_index = 0
         select_visible_cell(scene, context)
+        invalidate_clipboard_slot(scene, 'overlay_cell')
         self.report({'INFO'}, f'{len(cells)} overlay cell(s) in {image.name}')
         return {'FINISHED'}
 
@@ -106,16 +123,16 @@ class MESH_OT_sprotile_use_overlay_cell(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-        image = overlay_atlas_image(context)
+        image = browser_image(context)
         if not scan_matches(scene, image):
-            self.report({'WARNING'}, 'Scan the current atlas and tile size first')
+            self.report({'WARNING'}, 'Scan the current image and cell size first')
             return {'CANCELLED'}
         item = selected_overlay_cell(scene)
         if item is None:
             self.report({'WARNING'}, 'Select a visible overlay cell first')
             return {'CANCELLED'}
         try:
-            use_cell_as_b(scene, image, item.col, item.row)
+            use_cell_as_b(scene, image, item.col, item.row, cell_size=browser_cell_size(scene))
         except ValueError as error:
             self.report({'WARNING'}, str(error))
             return {'CANCELLED'}
@@ -123,12 +140,12 @@ class MESH_OT_sprotile_use_overlay_cell(bpy.types.Operator):
         return {'FINISHED'}
 
 
-def use_cell_as_b(scene, image, col, row):
+def use_cell_as_b(scene, image, col, row, *, cell_size=None):
     """Set B to a whole cell, as Capture B would, and make the next blend a per-face Overlay."""
     width, height = image_size(image)
     if image is None or min(width, height) <= 0:
         raise ValueError('Select a mesh with an atlas image first')
-    cell = scene.sprotile_tile_size
+    cell = scene.sprotile_tile_size if cell_size is None else cell_size
     validate_tile_dimensions(cell, cell, width, height)
     if not (0 <= col < width // cell and 0 <= row < height // cell):
         raise ValueError('This overlay cell is outside the atlas; scan it again')
@@ -141,16 +158,11 @@ def use_cell_as_b(scene, image, col, row):
     record.inset_px = get_uv_inset(scene)
     record.is_sampled = False
     record.sample_uv = (1, 0, 0, 0, 1, 0)
-    controls = scene.sprotile_blend_defaults
-    controls.edge_style = 'OVERLAY'
-    controls.tiles = 'FACE'
-    scene.sprotile_blend_settings_source = 'NEW'
-    invalidate_clipboard_slot(scene, 'b')
-    reset_preview_interaction()
+    finish_overlay_capture(scene, per_face=True)
 
 
 class VIEW3D_PT_sprotile_overlay_browser(bpy.types.Panel):
-    bl_label = 'Overlay Browser (experimental)'
+    bl_label = 'Overlay Browser'
     bl_idname = 'VIEW3D_PT_sprotile_overlay_browser'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -164,14 +176,23 @@ class VIEW3D_PT_sprotile_overlay_browser(bpy.types.Panel):
 
     def draw(self, context):
         layout, scene = self.layout, context.scene
-        image = overlay_atlas_image(context)
-        if image is None:
-            layout.label(text='Capture A or select a mesh with an atlas', icon='INFO')
-            return
-        layout.label(text=f'{image.name} ({scene.sprotile_tile_size} px tiles)', icon='IMAGE_DATA')
+        image = browser_image(context)
+        layout.row(align=True).prop(scene, 'sprotile_overlay_source', expand=True)
+        if scene.sprotile_overlay_source == 'SHEET':
+            row = layout.row(align=True)
+            row.prop(scene, 'sprotile_overlay_sheet', text='')
+            row.operator('mesh.sprotile_load_overlay_image', text='Open Sheet…', icon='FILE_FOLDER').as_sheet = True
+            layout.prop(scene, 'sprotile_overlay_sheet_size', text='Cell Size')
+            if image is None:
+                return
+        else:
+            if image is None:
+                layout.label(text='Capture A or select a mesh with an atlas', icon='INFO')
+                return
+            layout.label(text=f'{image.name} ({scene.sprotile_tile_size} px tiles)', icon='IMAGE_DATA')
         layout.operator('mesh.sprotile_scan_overlay_cells', icon='VIEWZOOM')
         if not scan_matches(scene, image):
-            layout.label(text='Scan this atlas to list its overlay cells', icon='INFO')
+            layout.label(text='Scan this image to list its overlay cells', icon='INFO')
             return
         if not len(scene.sprotile_overlay_cells):
             layout.label(text='No cells contain both clear and solid pixels', icon='INFO')
@@ -183,12 +204,31 @@ class VIEW3D_PT_sprotile_overlay_browser(bpy.types.Panel):
             return
         layout.template_list('SPROTILE_UL_overlay_cells', '', scene, 'sprotile_overlay_cells',
                              scene, 'sprotile_overlay_index', rows=6)
+        item = selected_overlay_cell(scene)
+        if item is not None:
+            icon = clipboard_preview_icon(scene, 'overlay_cell')
+            if icon is not None:
+                preview = layout.row()
+                preview.alignment = 'CENTER'
+                preview.template_icon(icon_value=icon.icon_id, scale=4)
+            elif (image.size[0] * image.size[1] * 16 > OVERLAY_THUMBNAIL_READ_LIMIT and
+                  overlay_thumbnail_pixels(image, browser_cell_size(scene), item.col, item.row) is None):
+                layout.label(text='No cached preview for this cell', icon='INFO')
         row = layout.row()
-        row.enabled = selected_overlay_cell(scene) is not None
+        row.enabled = item is not None
         row.operator('mesh.sprotile_use_overlay_cell', icon='IMAGE_RGB_ALPHA')
 
 
 def register_overlay_properties():
+    bpy.types.Scene.sprotile_overlay_source = EnumProperty(
+        name='Overlay Source', items=[
+            ('ATLAS', 'Mesh Atlas', 'Browse the captured A atlas or the active face material'),
+            ('SHEET', 'Separate Sheet', 'Browse another image for B while keeping the mesh atlas for A')],
+        default='ATLAS')
+    bpy.types.Scene.sprotile_overlay_sheet = PointerProperty(name='Overlay Sheet', type=bpy.types.Image)
+    bpy.types.Scene.sprotile_overlay_sheet_size = IntProperty(
+        name='Sheet Cell Size', description='Side of one square cell on this sheet, in pixels',
+        default=64, min=1, soft_max=1024)
     bpy.types.Scene.sprotile_overlay_scan_image = PointerProperty(type=bpy.types.Image)
     bpy.types.Scene.sprotile_overlay_scan_grid = IntVectorProperty(size=3)
     bpy.types.Scene.sprotile_overlay_kind = EnumProperty(
@@ -201,4 +241,6 @@ def register_overlay_properties():
 # Names from other Sprotile modules, used when functions run (see __init__.py).
 from .tiles import resolve_atlas_image, image_size, validate_tile_dimensions, get_uv_inset
 from .core import feature_enabled
-from .blend_ops import invalidate_clipboard_slot, reset_preview_interaction
+from .blend_ops import invalidate_clipboard_slot
+from .overlays import finish_overlay_capture
+from .presets import clipboard_preview_icon

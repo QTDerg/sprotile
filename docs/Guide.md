@@ -51,9 +51,16 @@ Under **Patch Fit**, choose how the projected outline fills the tile. If adjacen
 
 ## Layer an overlay
 
-1. Under **Texture Blend > Quick start**, choose **Overlay cell** and capture A, the base tile.
-2. Set **Tile Size** in **Map Tiles**, then open **Texture Blend > Overlay Browser** and click **Scan Overlay Cells**. Select a result and click **Use as B**. The scan looks for complete atlas cells with both clear and solid pixels. Scan again after changing the image or grid size.
-3. Select the target faces and click **Apply Blend**. Use **Opacity** to adjust B. For an external overlay, choose **Open PNG as B**. To generate a soft-edged overlay from a captured tile, use **Soften B**.
+1. Under **Texture Blend > Quick start**, choose **Overlay cell**. Capture the base tile as **A**.
+2. Open **Overlay Browser** and choose a source. **Mesh Atlas** uses the captured A image, or the active face's atlas if A is empty. Its cell size is **Tile Size** in Map Tiles. For a second image, choose **Separate Sheet**, select a loaded image or click **Open Sheet…**, and set **Cell Size** to the width of a square tile on that sheet. You can use 16 px decals on a 64 px mesh atlas.
+3. Click **Scan Overlay Cells**. The list contains whole cells with both clear and solid pixels. Choose a **Kind** to filter the list, select a row and inspect its checkerboard preview. **Use as B** captures that cell. Opening the sheet or selecting a row keeps the previous B available until you make that choice.
+4. Select the destination faces and click **Apply Blend**. Adjust **Opacity** to control how strongly B shows over A. With a shared material, different cells from one sheet use one overlay texture slot in Unreal.
+
+![The Separate Sheet browser showing a selected overlay cell and its checkerboard preview.](images/overlay-sheet.png)
+
+For a single cutout that fills a PNG, choose **Open PNG as B**. **Soften B** generates a soft edge from a captured tile. For artwork with a pure black background, the PNG file selector also offers **Pure black key**.
+
+Scan again after editing or reloading the sheet. On large images, a fresh scan also restores cell previews after reopening a file. Pack external images into the Blender file or keep their paths available when moving the project.
 
 ## Export blends to Unreal
 
